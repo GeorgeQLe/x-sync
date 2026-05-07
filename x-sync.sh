@@ -18,8 +18,39 @@ failures=()
 conflicts=()
 successes=()
 
-# Find all directories containing a .git folder
-while IFS= read -r gitdir; do
+# Spinner for long-running operations
+spin_pid=""
+start_spinner() {
+  local msg="$1"
+  printf "%s " "$msg"
+  (
+    chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    i=0
+    while true; do
+      printf "\r%s %s" "$msg" "${chars:i%${#chars}:1}"
+      i=$((i + 1))
+      sleep 0.1
+    done
+  ) &
+  spin_pid=$!
+}
+stop_spinner() {
+  if [ -n "$spin_pid" ]; then
+    kill "$spin_pid" 2>/dev/null
+    wait "$spin_pid" 2>/dev/null || true
+    spin_pid=""
+    printf "\r\033[K"
+  fi
+}
+trap stop_spinner EXIT
+
+# Discover repos
+start_spinner "Scanning for git repos..."
+mapfile -t git_dirs < <(find "$BASE_DIR" -type d -name ".git" | sort)
+stop_spinner
+printf "Found %d git repo(s). Syncing...\n" "${#git_dirs[@]}"
+
+for gitdir in "${git_dirs[@]}"; do
   repo_dir="$(dirname "$gitdir")"
   rel_path="${repo_dir#"$BASE_DIR"/}"
 
@@ -59,7 +90,7 @@ while IFS= read -r gitdir; do
       printf "  FAILED: %s\n" "$output"
     fi
   fi
-done < <(find "$BASE_DIR" -type d -name ".git" | sort)
+done
 
 verbose "All repos processed, generating summary"
 
