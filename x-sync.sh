@@ -13,6 +13,11 @@ done
 
 verbose() { [ "$VERBOSE" -eq 1 ] && printf "  [verbose] %s\n" "$1" || true; }
 
+has_unmerged_entries() {
+  local repo_dir="$1"
+  [ -n "$(git -C "$repo_dir" ls-files -u)" ]
+}
+
 BASE_DIR="$(pwd)"
 failures=()
 conflicts=()
@@ -68,27 +73,24 @@ for gitdir in "${git_dirs[@]}"; do
   verbose "Running git pull"
   output=""
   if output=$(git -C "$repo_dir" pull 2>&1); then
-    verbose "Pull succeeded, checking output for conflicts"
-    if echo "$output" | grep -qi "conflict"; then
-      verbose "Conflict detected in $rel_path"
-      conflicts+=("$rel_path")
-      printf "  CONFLICT: %s\n" "$output"
-    else
-      verbose "Pull completed cleanly for $rel_path"
-      successes+=("$rel_path")
-      printf "  %s\n" "$output"
-    fi
+    pull_status=0
+  else
+    pull_status=$?
+  fi
+
+  if has_unmerged_entries "$repo_dir"; then
+    verbose "Unmerged index entries detected in $rel_path"
+    conflicts+=("$rel_path")
+    printf "  CONFLICT: %s\n" "$output"
+  elif [ "$pull_status" -eq 0 ]; then
+    verbose "Pull completed cleanly for $rel_path"
+    successes+=("$rel_path")
+    printf "  %s\n" "$output"
   else
     verbose "Pull command failed for $rel_path"
-    if echo "$output" | grep -qi "conflict"; then
-      verbose "Conflict detected in $rel_path"
-      conflicts+=("$rel_path")
-      printf "  CONFLICT: %s\n" "$output"
-    else
-      verbose "Recording failure for $rel_path"
-      failures+=("$rel_path: $output")
-      printf "  FAILED: %s\n" "$output"
-    fi
+    verbose "Recording failure for $rel_path"
+    failures+=("$rel_path: $output")
+    printf "  FAILED: %s\n" "$output"
   fi
 done
 
