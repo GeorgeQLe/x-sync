@@ -22,6 +22,21 @@ BASE_DIR="$(pwd)"
 failures=()
 conflicts=()
 successes=()
+skipped=()
+
+skip_repo() {
+  local rel_path="$1"
+  local reason="$2"
+  local one_line="${reason//$'\n'/; }"
+  skipped+=("$rel_path: $one_line")
+  printf "  SKIPPED: %s\n" "$one_line"
+}
+
+is_skip_pull_output() {
+  local output="$1"
+  echo "$output" | grep -Eqi \
+    "couldn't find remote ref|could not read from remote repository|repository .* not found|repository not found|does not appear to be a git repository|no such remote ref"
+}
 
 # Spinner for long-running operations
 spin_pid=""
@@ -51,7 +66,7 @@ trap stop_spinner EXIT
 
 # Discover repos
 start_spinner "Scanning for git repos..."
-mapfile -t git_dirs < <(find "$BASE_DIR" -type d -name ".git" | sort)
+mapfile -t git_dirs < <(find "$BASE_DIR" -path "*/.build/*" -prune -o -type d -name ".git" -print | sort)
 stop_spinner
 printf "Found %d git repo(s). Syncing...\n" "${#git_dirs[@]}"
 
@@ -62,11 +77,24 @@ for gitdir in "${git_dirs[@]}"; do
   verbose "Found git repo at $repo_dir"
   printf "\n=== Pulling: %s ===\n" "$rel_path"
 
+  verbose "Checking for attached HEAD"
+  if ! current_branch=$(git -C "$repo_dir" symbolic-ref --quiet --short HEAD 2>/dev/null); then
+    verbose "Detached HEAD — skipping"
+    skip_repo "$rel_path" "detached HEAD"
+    continue
+  fi
+
   verbose "Checking for remote tracking branch"
-  if ! git -C "$repo_dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  if ! upstream=$(git -C "$repo_dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then
     verbose "No upstream tracking branch — skipping"
-    successes+=("$rel_path")
-    printf "  (no upstream tracking branch, skipped)\n"
+    skip_repo "$rel_path" "no upstream tracking branch for $current_branch"
+    continue
+  fi
+
+  verbose "Checking for local upstream ref"
+  if ! git -C "$repo_dir" rev-parse --verify --quiet "$upstream" >/dev/null; then
+    verbose "Upstream ref is missing locally — skipping"
+    skip_repo "$rel_path" "upstream ref $upstream is missing"
     continue
   fi
 
@@ -88,9 +116,14 @@ for gitdir in "${git_dirs[@]}"; do
     printf "  %s\n" "$output"
   else
     verbose "Pull command failed for $rel_path"
-    verbose "Recording failure for $rel_path"
-    failures+=("$rel_path: $output")
-    printf "  FAILED: %s\n" "$output"
+    if is_skip_pull_output "$output"; then
+      verbose "Pull failed because remote/upstream is unavailable; skipping $rel_path"
+      skip_repo "$rel_path" "$output"
+    else
+      verbose "Recording failure for $rel_path"
+      failures+=("$rel_path: $output")
+      printf "  FAILED: %s\n" "$output"
+    fi
   fi
 done
 
@@ -101,8 +134,16 @@ printf "\n============================\n"
 printf "  x-sync summary\n"
 printf "============================\n"
 printf "  Success:   %d\n" "${#successes[@]}"
+printf "  Skipped:   %d\n" "${#skipped[@]}"
 printf "  Conflicts: %d\n" "${#conflicts[@]}"
 printf "  Failures:  %d\n" "${#failures[@]}"
+
+if [ ${#skipped[@]} -gt 0 ]; then
+  printf "\nSkipped:\n"
+  for s in "${skipped[@]}"; do
+    printf "  - %s\n" "$s"
+  done
+fi
 
 if [ ${#conflicts[@]} -gt 0 ]; then
   printf "\nConflicts:\n"
